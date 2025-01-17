@@ -80,22 +80,76 @@ def main():
         help="Count of packets to receive",
     )
 
+    # 'serve' command
+    serve_parser = subparsers.add_parser(
+        "serve",
+        help="Wireguard connection simulator. Receives a handshake init and response with a handshake response.",
+    )
+    serve_parser.add_argument("--address", required=True, help="Address to serve.")
+    serve_parser.add_argument("--port", type=int, required=True, help="Port to serve.")
+    serve_parser.add_argument(
+        "-t", action="store_true", help="Send transport packets after the handshake"
+    )
+    serve_parser.add_argument(
+        "-n", type=int, default=1, help="Number of transport packets to send."
+    )
+    serve_parser.add_argument(
+        "--inter", type=float, default=0, help="Interval between 2 transport packets"
+    )
+    serve_parser.add_argument(
+        "--timeout",
+        type=int,
+        default=None,
+        help="Timeout for receiving a packages",
+    )
+
+    # 'client' command
+    client_parser = subparsers.add_parser(
+        "client",
+        help="Wireguard connection simulator. Send a handshake init and wait for a handshake response.",
+    )
+    client_parser.add_argument("--address", required=True, help="Address to serve.")
+    client_parser.add_argument("--port", type=int, required=True, help="Port to serve.")
+    client_parser.add_argument(
+        "-t", action="store_true", help="Send transport packets after the handshake"
+    )
+    client_parser.add_argument(
+        "-n", type=int, default=1, help="Number of transport packets to send."
+    )
+    client_parser.add_argument(
+        "--inter", type=float, default=0, help="Interval between 2 transport packets"
+    )
+    client_parser.add_argument(
+        "--timeout",
+        type=int,
+        default=None,
+        help="Timeout for receiving a packages",
+    )
+
     args = parser.parse_args()
 
-    if args.command == "send":
-        send_command(args)
-    elif args.command == "sniff":
-        handle_sniff(args)
+    match args.command:
+        case "send":
+            send_command(args)
+        case "sniff":
+            sniff_command(args)
+        case "serve":
+            serve_command(args)
+        case "client":
+            client_command(args)
 
 
 def wg_init_handshake_packet(
-    address: str, port: int, n: int, inter: float
+    address: str, port: int, n: int, inter: float, sport: Optional[int] = None
 ) -> List[scapy.layers.l2.Ether]:
     timestamps = [tai64n(time.time() + i * inter) for i in range(n)]
+
+    udp = UDP(dport=port, sport=sport) if sport else UDP(dport=port)
+
     return [
         Ether()
         / IP(dst=address)
-        / UDP(dport=port)
+        / udp
         / Wireguard()
         / fuzz(WireguardInitiation(encrypted_timestamp=timestamp))
         for timestamp in timestamps
@@ -103,23 +157,25 @@ def wg_init_handshake_packet(
 
 
 def wg_response_handshake_packet(
-    address: str, port: int, n: int
+    address: str, port: int, n: int, sport: Optional[int] = None
 ) -> List[scapy.layers.l2.Ether]:
+    udp = UDP(dport=port, sport=sport) if sport else UDP(dport=port)
+
     return [
-        Ether()
-        / IP(dst=address)
-        / UDP(dport=port)
-        / Wireguard()
-        / fuzz(WireguardResponse())
+        Ether() / IP(dst=address) / udp / Wireguard() / fuzz(WireguardResponse())
         for _ in range(n)
     ]
 
 
-def wg_transport_packet(address: str, port: int, n: int) -> List[scapy.layers.l2.Ether]:
+def wg_transport_packet(
+    address: str, port: int, n: int, sport: Optional[int] = None
+) -> List[scapy.layers.l2.Ether]:
+    udp = UDP(dport=port, sport=sport) if sport else UDP(dport=port)
+
     return [
         Ether()
         / IP(dst=address)
-        / UDP(dport=port)
+        / udp
         / Wireguard()
         / fuzz(
             WireguardTransport(
@@ -177,7 +233,7 @@ def handle_response(args: argparse.Namespace, packet):
         print(packet.summary())
 
 
-def handle_sniff(args: argparse.Namespace):
+def sniff_command(args: argparse.Namespace):
     callback = partial(handle_response, args)
 
     sniff(
@@ -185,6 +241,117 @@ def handle_sniff(args: argparse.Namespace):
         prn=callback,
         timeout=args.timeout,
         count=args.n,
+    )
+
+
+def serve_callback(args: argparse.Namespace, packet):
+    # if WireguardInitiation not in packet:
+    # print("Received packet is not a Wireguard Handshake")
+    # packet.show()
+    # return
+
+    print("Handshake received, sending response...")
+    sendp(wg_response_handshake_packet(packet[IP].src, packet[UDP].sport, 1))
+
+    if args.t:
+        sniffer = AsyncSniffer(
+            filter=f"udp and host {args.address} and port {args.port}",
+            timeout=args.timeout,
+            count=args.n,
+        )
+        sniffer.start()
+        sendp(
+            wg_transport_packet(packet[IP].src, packet[UDP].sport, args.n),
+            inter=args.inter,
+            return_packets=True,
+        ).summary()
+        print()
+
+        sniffer.join()
+
+        n = 0
+        if sniffer.results:
+            n = len(list(filter(lambda p: p[UDP].dport == args.port, sniffer.results)))
+        print(f"Received {n} transport packets")
+        sniffer.results.summary()
+
+
+def serve_command(args: argparse.Namespace):
+    print(f"Serving {args.address}:{args.port}")
+
+    callback = partial(serve_callback, args)
+    sniff(
+        filter=f"udp and host {args.address} and port {args.port}",
+        prn=callback,
+        timeout=args.timeout,
+        count=1,
+    )
+
+
+def client_callback(args: argparse.Namespace, my_packet, packet):
+    print("Received a packet")
+    if WireguardResponse in packet:
+        print("Handshake response received")
+
+    if args.t:
+        sniffer = AsyncSniffer(
+            filter=f"udp and host {my_packet[IP].src} and port {my_packet[UDP].sport}",
+            timeout=args.timeout,
+            count=args.n,
+        )
+        sniffer.start()
+        sendp(
+            wg_transport_packet(
+                args.address,
+                args.port,
+                args.n,
+                # sport=12345,
+            ),
+            inter=args.inter,
+            return_packets=True,
+        ).summary()
+        print()
+
+        print(
+            f"Exchanging transport packets with {my_packet[IP].src}:{my_packet[UDP].dport}..."
+        )
+        sniffer.join()
+
+        n = 0
+        if sniffer.results:
+            n = len(
+                list(
+                    filter(
+                        lambda p: p[UDP].dport == my_packet[UDP].sport, sniffer.results
+                    )
+                )
+            )
+        print(f"Received {n} transport packets")
+        sniffer.results.summary()
+
+
+def client_command(args: argparse.Namespace):
+    print(f"Sending handshake init to {args.address}:{args.port}")
+    packets = sendp(
+        wg_init_handshake_packet(
+            args.address,
+            args.port,
+            1,
+            0,
+            #  sport=12345
+        ),
+        return_packets=True,
+    )
+    assert packets
+    [packet] = packets
+
+    callback = partial(client_callback, args, packet)
+    print(f"Waiting for handshake response on {packet[IP].src}:{packet[UDP].sport}...")
+    sniff(
+        filter=f"udp and host {packet[IP].src} and port {packet[UDP].sport}",
+        prn=callback,
+        timeout=args.timeout,
+        count=1,
     )
 
 
