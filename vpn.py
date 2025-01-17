@@ -251,21 +251,33 @@ def serve_callback(args: argparse.Namespace, packet):
     # return
 
     print("Handshake received, sending response...")
-    sendp(wg_response_handshake_packet(packet[IP].src, packet[UDP].sport, 1))
+    sendp(
+        wg_response_handshake_packet(
+            packet[IP].src, packet[UDP].sport, 1, sport=args.port
+        )
+    )
 
     if args.t:
         sniffer = AsyncSniffer(
             filter=f"udp and host {args.address} and port {args.port}",
             timeout=args.timeout,
-            count=args.n,
+            # count=args.n,
         )
+
         sniffer.start()
+        time.sleep(1)
         sendp(
-            wg_transport_packet(packet[IP].src, packet[UDP].sport, args.n),
+            wg_transport_packet(
+                packet[IP].src, packet[UDP].sport, args.n, sport=args.port
+            ),
             inter=args.inter,
-            return_packets=True,
-        ).summary()
-        print()
+            # return_packets=True,
+        )  # .summary()
+        # print()
+
+        print(
+            f"Exchanging transport packets with {packet[IP].src}:{packet[UDP].sport}..."
+        )
 
         sniffer.join()
 
@@ -273,7 +285,7 @@ def serve_callback(args: argparse.Namespace, packet):
         if sniffer.results:
             n = len(list(filter(lambda p: p[UDP].dport == args.port, sniffer.results)))
         print(f"Received {n} transport packets")
-        sniffer.results.summary()
+        # sniffer.results.summary()
 
 
 def serve_command(args: argparse.Namespace):
@@ -297,20 +309,23 @@ def client_callback(args: argparse.Namespace, my_packet, packet):
         sniffer = AsyncSniffer(
             filter=f"udp and host {my_packet[IP].src} and port {my_packet[UDP].sport}",
             timeout=args.timeout,
-            count=args.n,
+            # count=args.n,
         )
+
         sniffer.start()
+        time.sleep(1)
+
         sendp(
             wg_transport_packet(
                 args.address,
                 args.port,
                 args.n,
-                # sport=12345,
+                sport=12345,
             ),
             inter=args.inter,
-            return_packets=True,
-        ).summary()
-        print()
+            # return_packets=True,
+        )  # .summary()
+        # print()
 
         print(
             f"Exchanging transport packets with {my_packet[IP].src}:{my_packet[UDP].dport}..."
@@ -327,19 +342,13 @@ def client_callback(args: argparse.Namespace, my_packet, packet):
                 )
             )
         print(f"Received {n} transport packets")
-        sniffer.results.summary()
+        # sniffer.results.summary()
 
 
 def client_command(args: argparse.Namespace):
     print(f"Sending handshake init to {args.address}:{args.port}")
     packets = sendp(
-        wg_init_handshake_packet(
-            args.address,
-            args.port,
-            1,
-            0,
-            #  sport=12345
-        ),
+        wg_init_handshake_packet(args.address, args.port, 1, 0, sport=12345),
         return_packets=True,
     )
     assert packets
