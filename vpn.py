@@ -41,7 +41,21 @@ def main():
         "--port", type=int, required=True, help="Target port to send data."
     )
     send_parser.add_argument(
-        "--sport", type=int, default=0, help="Source port from which to send the data."
+        "--mangle_zeros",
+        action="store_true",
+        help="Mangle Wireguard header's reserved zeros",
+    )
+    send_parser.add_argument(
+        "--type",
+        type=int,
+        default=None,
+        help="Substitute the message type in the Wireguard header",
+    )
+    send_parser.add_argument(
+        "--sport",
+        type=int,
+        default=None,
+        help="Source port from which to send the data.",
     )
     send_parser.add_argument(
         "-n", type=int, default=1, help="Number of packets to send."
@@ -105,6 +119,17 @@ def main():
         default=None,
         help="Timeout for receiving a packages",
     )
+    serve_parser.add_argument(
+        "--mangle_zeros",
+        action="store_true",
+        help="Mangle Wireguard header's reserved zeros",
+    )
+    serve_parser.add_argument(
+        "--type",
+        type=int,
+        default=None,
+        help="Substitute the message type in the Wireguard header",
+    )
 
     # 'client' command
     client_parser = subparsers.add_parser(
@@ -114,7 +139,10 @@ def main():
     client_parser.add_argument("--address", required=True, help="Address to serve.")
     client_parser.add_argument("--port", type=int, required=True, help="Port to serve.")
     client_parser.add_argument(
-        "--sport", type=int, default=0, help="Source port from which to send the data."
+        "--sport",
+        type=int,
+        default=None,
+        help="Source port from which to send the data.",
     )
     client_parser.add_argument(
         "-t", action="store_true", help="Send transport packets after the handshake"
@@ -131,6 +159,17 @@ def main():
         default=None,
         help="Timeout for receiving a packages",
     )
+    client_parser.add_argument(
+        "--mangle_zeros",
+        action="store_true",
+        help="Mangle Wireguard header's reserved zeros",
+    )
+    client_parser.add_argument(
+        "--type",
+        type=int,
+        default=None,
+        help="Substitute the message type in the Wireguard header",
+    )
 
     args = parser.parse_args()
 
@@ -144,44 +183,82 @@ def main():
         client_command(args)
 
 
+def wg_header(
+    msg_type: Optional[int] = None,
+    mangle_zeros: Optional[bytes] = None,
+) -> Wireguard:
+    if msg_type and not mangle_zeros:
+        wg = Wireguard(message_type=msg_type)
+    elif not msg_type and mangle_zeros:
+        wg = Wireguard(reserved_zero=randint(8388608, 16777215))
+    elif msg_type and mangle_zeros:
+        wg = Wireguard(message_type=msg_type, reserved_zero=randint(8388608, 16777215))
+    else:
+        wg = Wireguard()
+
+    return wg
+
+
 def wg_init_handshake_packet(
-    address: str, port: int, n: int, inter: float, sport: Optional[int] = None
+    address: str,
+    port: int,
+    n: int,
+    inter: float,
+    msg_type: Optional[int] = None,
+    mangle_zeros: Optional[bytes] = None,
+    sport: Optional[int] = None,
 ) -> List[scapy.layers.l2.Ether]:
     timestamps = [tai64n(time.time() + i * inter) for i in range(n)]
 
     udp = UDP(dport=port, sport=sport) if sport else UDP(dport=port)
 
+    wg = wg_header(msg_type=msg_type, mangle_zeros=mangle_zeros)
+
     return [
         Ether()
         / IP(dst=address)
         / udp
-        / Wireguard()
+        / wg
         / fuzz(WireguardInitiation(encrypted_timestamp=timestamp))
         for timestamp in timestamps
     ]
 
 
 def wg_response_handshake_packet(
-    address: str, port: int, n: int, sport: Optional[int] = None
+    address: str,
+    port: int,
+    n: int,
+    msg_type: Optional[int] = None,
+    mangle_zeros: Optional[bytes] = None,
+    sport: Optional[int] = None,
 ) -> List[scapy.layers.l2.Ether]:
     udp = UDP(dport=port, sport=sport) if sport else UDP(dport=port)
 
+    wg = wg_header(msg_type=msg_type, mangle_zeros=mangle_zeros)
+
     return [
-        Ether() / IP(dst=address) / udp / Wireguard() / fuzz(WireguardResponse())
+        Ether() / IP(dst=address) / udp / wg / fuzz(WireguardResponse())
         for _ in range(n)
     ]
 
 
 def wg_transport_packet(
-    address: str, port: int, n: int, sport: Optional[int] = None
+    address: str,
+    port: int,
+    n: int,
+    msg_type: Optional[int] = None,
+    mangle_zeros: Optional[bytes] = None,
+    sport: Optional[int] = None,
 ) -> List[scapy.layers.l2.Ether]:
     udp = UDP(dport=port, sport=sport) if sport else UDP(dport=port)
+
+    wg = wg_header(msg_type=msg_type, mangle_zeros=mangle_zeros)
 
     return [
         Ether()
         / IP(dst=address)
         / udp
-        / Wireguard()
+        / wg
         / fuzz(
             WireguardTransport(
                 counter=counter,
@@ -209,6 +286,8 @@ def send_command(args: argparse.Namespace):
             args.port,
             args.n,
             args.inter,
+            msg_type=args.type,
+            mangle_zeros=args.mangle_zeros,
             sport=args.sport,
         )
     elif args.packet == "hr":
@@ -216,6 +295,8 @@ def send_command(args: argparse.Namespace):
             args.address,
             args.port,
             args.n,
+            msg_type=args.type,
+            mangle_zeros=args.mangle_zeros,
             sport=args.sport,
         )
     elif args.packet == "t":
@@ -223,6 +304,8 @@ def send_command(args: argparse.Namespace):
             args.address,
             args.port,
             args.n,
+            msg_type=args.type,
+            mangle_zeros=args.mangle_zeros,
             sport=args.sport,
         )
 
@@ -266,7 +349,12 @@ def serve_callback(args: argparse.Namespace, packet):
     print("Handshake received, sending response...")
     sendp(
         wg_response_handshake_packet(
-            packet[IP].src, packet[UDP].sport, 1, sport=args.port
+            packet[IP].src,
+            packet[UDP].sport,
+            1,
+            sport=args.port,
+            msg_type=args.type,
+            mangle_zeros=args.mangle_zeros,
         )
     )
 
@@ -361,7 +449,15 @@ def client_callback(args: argparse.Namespace, my_packet, packet):
 def client_command(args: argparse.Namespace):
     print(f"Sending handshake init to {args.address}:{args.port}")
     packets = sendp(
-        wg_init_handshake_packet(args.address, args.port, 1, 0, sport=args.sport),
+        wg_init_handshake_packet(
+            args.address,
+            args.port,
+            1,
+            0,
+            msg_type=args.type,
+            mangle_zeros=args.mangle_zeros,
+            sport=args.sport,
+        ),
         return_packets=True,
     )
     assert packets
