@@ -41,6 +41,9 @@ def main():
         "--port", type=int, required=True, help="Target port to send data."
     )
     send_parser.add_argument(
+        "--sport", type=int, default=0, help="Source port from which to send the data."
+    )
+    send_parser.add_argument(
         "-n", type=int, default=1, help="Number of packets to send."
     )
     send_parser.add_argument(
@@ -110,6 +113,9 @@ def main():
     )
     client_parser.add_argument("--address", required=True, help="Address to serve.")
     client_parser.add_argument("--port", type=int, required=True, help="Port to serve.")
+    client_parser.add_argument(
+        "--sport", type=int, default=0, help="Source port from which to send the data."
+    )
     client_parser.add_argument(
         "-t", action="store_true", help="Send transport packets after the handshake"
     )
@@ -199,12 +205,26 @@ def tai64n(timestamp: float) -> bytes:
 def send_command(args: argparse.Namespace):
     if args.packet == "hi":
         wg_packets = wg_init_handshake_packet(
-            args.address, args.port, args.n, args.inter
+            args.address,
+            args.port,
+            args.n,
+            args.inter,
+            sport=args.sport,
         )
     elif args.packet == "hr":
-        wg_packets = wg_response_handshake_packet(args.address, args.port, args.n)
+        wg_packets = wg_response_handshake_packet(
+            args.address,
+            args.port,
+            args.n,
+            sport=args.sport,
+        )
     elif args.packet == "t":
-        wg_packets = wg_transport_packet(args.address, args.port, args.n)
+        wg_packets = wg_transport_packet(
+            args.address,
+            args.port,
+            args.n,
+            sport=args.sport,
+        )
 
     packets = sendp(
         wg_packets, count=args.r, verbose=2, return_packets=True, inter=args.inter
@@ -243,11 +263,6 @@ def sniff_command(args: argparse.Namespace):
 
 
 def serve_callback(args: argparse.Namespace, packet):
-    # if WireguardInitiation not in packet:
-    # print("Received packet is not a Wireguard Handshake")
-    # packet.show()
-    # return
-
     print("Handshake received, sending response...")
     sendp(
         wg_response_handshake_packet(
@@ -318,7 +333,7 @@ def client_callback(args: argparse.Namespace, my_packet, packet):
                 args.address,
                 args.port,
                 args.n,
-                sport=12345,
+                sport=args.sport,
             ),
             inter=args.inter,
             # return_packets=True,
@@ -346,7 +361,7 @@ def client_callback(args: argparse.Namespace, my_packet, packet):
 def client_command(args: argparse.Namespace):
     print(f"Sending handshake init to {args.address}:{args.port}")
     packets = sendp(
-        wg_init_handshake_packet(args.address, args.port, 1, 0, sport=12345),
+        wg_init_handshake_packet(args.address, args.port, 1, 0, sport=args.sport),
         return_packets=True,
     )
     assert packets
