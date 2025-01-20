@@ -128,15 +128,14 @@ def main():
 
     args = parser.parse_args()
 
-    match args.command:
-        case "send":
-            send_command(args)
-        case "sniff":
-            sniff_command(args)
-        case "serve":
-            serve_command(args)
-        case "client":
-            client_command(args)
+    if args.command == "send":
+        send_command(args)
+    elif args.command == "sniff":
+        sniff_command(args)
+    elif args.command == "serve":
+        serve_command(args)
+    elif args.command == "client":
+        client_command(args)
 
 
 def wg_init_handshake_packet(
@@ -198,15 +197,14 @@ def tai64n(timestamp: float) -> bytes:
 
 
 def send_command(args: argparse.Namespace):
-    match args.packet:
-        case "hi":
-            wg_packets = wg_init_handshake_packet(
-                args.address, args.port, args.n, args.inter
-            )
-        case "hr":
-            wg_packets = wg_response_handshake_packet(args.address, args.port, args.n)
-        case "t":
-            wg_packets = wg_transport_packet(args.address, args.port, args.n)
+    if args.packet == "hi":
+        wg_packets = wg_init_handshake_packet(
+            args.address, args.port, args.n, args.inter
+        )
+    elif args.packet == "hr":
+        wg_packets = wg_response_handshake_packet(args.address, args.port, args.n)
+    elif args.packet == "t":
+        wg_packets = wg_transport_packet(args.address, args.port, args.n)
 
     packets = sendp(
         wg_packets, count=args.r, verbose=2, return_packets=True, inter=args.inter
